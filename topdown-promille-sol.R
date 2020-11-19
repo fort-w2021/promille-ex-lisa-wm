@@ -21,29 +21,13 @@ library(testthat)
 
 # HELPER FUNCTIONS -------------------------------------------------------------
 
-# Input checks
-
-autocorrect_drunktexting <- function(age, 
-                                     height, 
-                                     weight, 
-                                     drinking_time, 
-                                     drinks) {
- 
-  assert_count(age)
-  assert_count(height)
-  assert_count(weight)
-  assert_names(names(drinks), subset.of = accepted_drinks)
-  assert_integerish(unlist(drinks))
-  assert_posixct(drinking_time)
-  if (diff(drinking_time) < 0) stop("end must not lie before beginning")
-  
-}
-
 # Age checks
 
 find_impostor <- function(age, drinks) {
+  
   hard_stuff <- any(names(drinks) == "schnaps")
   ifelse(age < 16 | (age >= 16 & age < 18 & hard_stuff), TRUE, FALSE)
+  
 }
 
 # Amount hammered home
@@ -51,15 +35,18 @@ find_impostor <- function(age, drinks) {
 get_intake <- function(drinks) {
   
   lookup_alc <- data.frame(
-    rowname = accepted_drinks,
+    drink = accepted_drinks,
     volume = c(1000, 500, 200, 40),
     ethanol = c(0.06, 0.06, 0.11, 0.4)
   )
-  
-  data.frame(drinks) %>%
-    rownames_to_column() %>% 
-    left_join(lookup_alc, by = "rowname") %>%
-    mutate(amount_alc = drinks * volume * ethanol * 0.8) %>%
+
+  drinks <- unlist(drinks)
+  drinks <- tapply(drinks, names(drinks), sum)
+
+  data.frame(count = drinks) %>%
+    rownames_to_column("drink") %>% 
+    left_join(lookup_alc, by = "drink") %>% 
+    mutate(amount_alc = count * volume * ethanol * 0.8) %>%
     summarise(sum(amount_alc)) %>%
     as.numeric()
   
@@ -73,17 +60,21 @@ get_water <- function(sex, age, height, weight) {
       sex == "male" ~ c(2.447, -0.09516, 0.1074, 0.3362),
       sex == "female" ~ c(0.203, -0.07, 0.1069, 0.2466)
     )
-    design_matrix <- matrix(c(1, age, height, weight))
-    as.numeric(weights %*% design_matrix)
+    features <- matrix(c(1, age, height, weight))
+    as.numeric(weights %*% features)
     
 }
 
 # Blood alcohol level after W/W formula
 
-apply_formula <- function(amount_consumed, gkw, happy_hour) {
+apply_ww_formula <- function(amount_consumed, gkw, time_passed) {
+  
   c_pretox <- 0.8 * amount_consumed / (1.055 * gkw)
-  c_detox <- c_pretox - 0.15 * (happy_hour - 1)
-  c_detox
+  ifelse(
+    time_passed >= 1,
+    max(0, c_pretox - 0.15 * (time_passed - 1)),
+    c_pretox)
+
 }
 
 # PROMILLE FUNCTION ------------------------------------------------------------
@@ -95,13 +86,21 @@ tell_me_how_drunk <- function(age,
                               drinking_time, 
                               drinks) {
   
-  accepted_drinks <<- c("massn", "hoibe", "wein", "schnaps")
-  
   # Check input formats and convert sex to supported format, if possible
-  # If you're queer, drink more beer...
   
-  autocorrect_drunktexting(age, height, weight, drinking_time, drinks)
-  sex <- match.arg(tolower(sex), c("female", "male"))
+  assert_count(age)
+  assert_count(height)
+  assert_count(weight)
+  
+  accepted_drinks <<- c("massn", "hoibe", "wein", "schnaps")
+  assert_names(names(unlist(drinks)), subset.of = accepted_drinks)
+  assert_integerish(unlist(drinks))
+  
+  assert_posixct(drinking_time)
+  if (diff(drinking_time) < 0) stop("end must not lie before beginning")
+
+  # If you're queer, drink more beer...
+  sex <- match.arg(tolower(sex), c("female", "male")) 
   
   # Check drinking age
   
@@ -113,21 +112,15 @@ tell_me_how_drunk <- function(age,
   
   amount_consumed <- get_intake(drinks)
   gkw <- get_water(sex, age, height, weight)
-  happy_hour <- as.numeric(diff(drinking_time))
+  happy_hour <- 
+    as.numeric(difftime(drinking_time[2], drinking_time[1], units = "hours"))
   
   # Calculate blood alcohol level incl. decomposition
   
-  apply_formula(amount_consumed, gkw, happy_hour)
+  apply_ww_formula(amount_consumed, gkw, happy_hour)
   
 }
 
 # TESTS ------------------------------------------------------------------------
 
 test_file(here("topdown-promille-tests.R"))
-
-age = 39
-sex = "male"
-height = 190
-weight = 87
-drinking_time = as.POSIXct(c("2016-10-03 17:15:00", "2016-10-03 22:55:00"))
-drinks = c("massn" = 3, "schnaps" = 4)
